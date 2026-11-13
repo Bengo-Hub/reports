@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/go-pdf/fpdf v0.9.0
 	github.com/xuri/excelize/v2 v2.11.1
+	golang.org/x/image v0.44.0
 )
 
 require (

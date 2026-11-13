@@ -94,6 +94,14 @@ type Signature struct {
 	Role      string // e.g. "For and on behalf of the Estate"
 	Name      string // empty leaves the line blank for a wet-ink signature
 	DateLabel string // e.g. "Date"; omitted when empty
+
+	// Image is a stored signature (PNG or WebP, at most MaxSignatureImageBytes) drawn above the
+	// rule, for a signer who chose their saved profile signature. The caller checks consent before
+	// passing it. Empty, oversized or unreadable images leave the line blank for a wet-ink
+	// signature; they never fail the report.
+	Image []byte
+	// Note is a small line under the block, e.g. when and how the signature was applied.
+	Note string
 }
 
 // Column defines a table column.

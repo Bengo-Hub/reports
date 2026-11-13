@@ -36,6 +36,22 @@ body, mime, err := reports.Generate(r, format)
 
 Excel gets a Summary sheet plus one sheet per table, with `Money` columns as real numbers.
 
+## Stored signatures
+
+A `Signature` may carry `Image`, a signer's saved signature (PNG or WebP, at most
+`MaxSignatureImageBytes`, 1 MB, and 4000 pixels a side). It is drawn above the rule, fitted to the
+block, with its transparency kept; `Note` adds a small line under the block (for example when and
+how it was signed). The caller checks the signer's consent before passing the image. An empty,
+oversized or unreadable image leaves the line blank for a wet-ink signature and never fails the
+report. `PrepareSignatureImage` runs the same checks, so a service can refuse a bad file when the
+signature is chosen.
+
+## Same input, same bytes
+
+The PDF writes its objects in a fixed order and takes its document dates from `GeneratedAt`, so
+rendering one `Report` twice gives identical bytes. A service can store the SHA-256 of a closed or
+signed document and check it later by rendering again from the frozen data.
+
 ## Rules the renderer keeps
 
 - Page breaks use the current orientation's height (landscape A4 is 210mm tall). Assuming 297mm

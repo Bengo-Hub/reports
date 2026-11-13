@@ -28,6 +28,14 @@ func layout(r *Report) *fpdf.Fpdf {
 	}
 	pdf := fpdf.New(orient, "mm", "A4", "")
 	pdf.SetCompression(true)
+	// The same Report renders to the same bytes, so a document hash stored when a record is
+	// signed or closed can be checked by rendering it again: objects are written in a fixed order
+	// and the document dates come from GeneratedAt instead of the clock.
+	pdf.SetCatalogSort(true)
+	if !r.GeneratedAt.IsZero() {
+		pdf.SetCreationDate(r.GeneratedAt)
+		pdf.SetModificationDate(r.GeneratedAt)
+	}
 	pdf.SetMargins(margin, topY, margin)
 	pdf.SetAutoPageBreak(false, bottomMg) // pages break by hand: drawing uses absolute coordinates
 	pdf.AliasNbPages("")                  // "{nb}" becomes the page count
@@ -62,6 +70,8 @@ type reportCtx struct {
 	r     *Report
 	y     float64
 	pageH float64
+	// sigSeq numbers embedded signature images; each needs its own name in the document.
+	sigSeq int
 }
 
 // runningHeaderH is the height of the continuation-page header.
@@ -274,6 +284,11 @@ func (rc *reportCtx) sectionMinBodyH(s Section) float64 {
 	case SectionProse:
 		return 2 * proseLineH
 	case SectionSignature:
+		for _, sig := range s.Signatures[:min(2, len(s.Signatures))] {
+			if len(sig.Image) > 0 {
+				return sigBlockH + sigImageRoom - sigWetInkRoom
+			}
+		}
 		return sigBlockH
 	default:
 		return 0
@@ -288,6 +303,9 @@ const (
 	proseLineH = 4.6  // wrapped body line height
 	proseGap   = 2.6  // gap between paragraphs
 	sigBlockH  = 20.0 // one signature row
+
+	sigWetInkRoom = 8.0  // space above the rule for a wet-ink signature
+	sigImageRoom  = 18.0 // space above the rule when the row carries a stored signature image
 )
 
 // drawProse measures each paragraph first, so one that would straddle the page bottom starts on a
@@ -322,7 +340,8 @@ func (rc *reportCtx) drawProse(s Section) {
 	}
 }
 
-// drawSignatures renders ruled signature blocks two per row.
+// drawSignatures renders ruled signature blocks two per row. A row holding a stored signature image
+// gets a taller space above its rules for the image.
 func (rc *reportCtx) drawSignatures(s Section) {
 	p := rc.p
 	if len(s.Signatures) == 0 {
@@ -330,31 +349,71 @@ func (rc *reportCtx) drawSignatures(s Section) {
 	}
 	sigW := (p.contentW - 12.0) / 2
 	for i := 0; i < len(s.Signatures); i += 2 {
-		rc.ensure(sigBlockH)
-		y := rc.y + 8.0 // room above the rule for a wet-ink signature
-		for j := 0; j < 2 && i+j < len(s.Signatures); j++ {
-			sig := s.Signatures[i+j]
+		row := s.Signatures[i:min(i+2, len(s.Signatures))]
+		images := make([][]byte, len(row))
+		room, hasNote := sigWetInkRoom, false
+		for j, sig := range row {
+			if len(sig.Image) > 0 {
+				if b, err := PrepareSignatureImage(sig.Image); err == nil {
+					images[j] = b
+					room = sigImageRoom
+				}
+			}
+			hasNote = hasNote || sig.Note != ""
+		}
+		rc.ensure(sigBlockH + room - sigWetInkRoom)
+		y := rc.y + room // the rule; the signature goes in the space above it
+		for j, sig := range row {
 			x := p.leftX + float64(j)*(sigW+12.0)
+			if images[j] != nil {
+				rc.drawSignatureImage(images[j], x, y, sigW*0.6, room-1.5)
+			}
 			p.setDraw(p.pal.navy)
 			p.pdf.SetLineWidth(0.4)
 			p.pdf.Line(x, y, x+sigW, y)
 			p.text(x, y+1.4, sig.Role, "", 8.2, p.pal.grey)
+			next := y + 5.6
 			if sig.Name != "" {
-				p.text(x, y+5.6, sig.Name, "B", 9.2, p.pal.navy)
+				p.text(x, next, sig.Name, "B", 9.2, p.pal.navy)
+				next += 4.6
 			}
 			if sig.DateLabel != "" {
-				dy := y + 5.6
-				if sig.Name != "" {
-					dy += 4.6
-				}
 				p.setDraw(p.pal.line)
 				p.pdf.SetLineWidth(0.25)
-				p.pdf.Line(x, dy+3.4, x+sigW*0.7, dy+3.4)
-				p.text(x, dy, sig.DateLabel+":", "", 8.2, p.pal.muted)
+				p.pdf.Line(x, next+3.4, x+sigW*0.7, next+3.4)
+				p.text(x, next, sig.DateLabel+":", "", 8.2, p.pal.muted)
+				next += 4.6
+			}
+			if sig.Note != "" {
+				p.text(x, next, p.clip(sig.Note, "", 7, sigW), "", 7, p.pal.muted)
 			}
 		}
-		rc.y = y + sigBlockH - 8.0 + 6.0
+		rc.y = y + sigBlockH - sigWetInkRoom + 6.0
+		if hasNote {
+			rc.y += 2.0
+		}
 	}
+}
+
+// drawSignatureImage fits a prepared PNG into maxW by maxH, sitting on the rule at y. A PNG the
+// PDF writer still cannot read is skipped, leaving the line blank.
+func (rc *reportCtx) drawSignatureImage(b []byte, x, y, maxW, maxH float64) {
+	pdf := rc.p.pdf
+	rc.sigSeq++
+	name := fmt.Sprintf("rptsig%d", rc.sigSeq)
+	opts := fpdf.ImageOptions{ImageType: "PNG"}
+	info := pdf.RegisterImageOptionsReader(name, opts, bytes.NewReader(b))
+	if info == nil || info.Height() <= 0 || info.Width() <= 0 || pdf.Err() {
+		pdf.ClearError()
+		return
+	}
+	h := maxH
+	w := h * info.Width() / info.Height()
+	if w > maxW {
+		w = maxW
+		h = w * info.Height() / info.Width()
+	}
+	pdf.ImageOptions(name, x, y-h-0.5, w, h, false, opts, 0, "")
 }
 
 // drawTable renders a zebra-striped table with an optional bold total row, repeating the header

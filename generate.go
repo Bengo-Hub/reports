@@ -105,7 +105,7 @@ func renderCSV(r *Report) ([]byte, error) {
 			}
 		case SectionSignature:
 			for _, sig := range s.Signatures {
-				_ = w.Write([]string{sig.Role, sig.Name})
+				_ = w.Write([]string{sig.Role, sig.Name, sig.Note})
 			}
 		}
 		_ = w.Write([]string{})
